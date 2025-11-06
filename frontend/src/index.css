@@ -1,0 +1,113 @@
+/* 🌿 WILDWATCH UI THEME */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Inter', sans-serif;
+}
+/* Fix for react-phone-number-input */
+.PhoneInputInput {
+  /* This makes it match your other input fields */
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 15px;
+  
+  /* Overrides for the library's default style */
+  border-left: none !important;
+  box-shadow: none !important;
+}
+.error-message {
+  background-color: #ffebee; /* Light red background */
+  color: #D32F2F; /* Darker red text */
+  padding: 10px 15px;
+  border-radius: 8px;
+  margin-top: 15px;
+  font-size: 0.9em;
+  font-weight: 500;
+  border: 1px solid #D32F2F;
+  text-align: center;
+}
+
+.PhoneInputCountry {
+  margin: 8px 0 8px 8px; /* Give the flag some space */
+}
+body {
+  background: linear-gradient(to bottom right, #f4f4f4, #e8f5e9); /* Soft green gradient */
+  color: #333;
+  min-height: 100vh; /* Ensure gradient covers full height */
+  display: flex; /* Use flex to center the container */
+  justify-content: center;
+  align-items: center;
+}
+
+.container {
+  max-width: 420px;
+  /* margin: 100px auto;  Remove this, flexbox will handle centering */
+  background: #fff;
+  border-radius: 18px; /* Slightly more rounded */
+  padding: 40px 30px;
+  box-shadow: 0 6px 25px rgba(0,0,0,0.1); /* Slightly more prominent shadow */
+  text-align: center;
+  position: relative; /* For potential absolute positioning later */
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+h2 {
+  font-weight: 600;
+  color: #2E7D32;
+  margin-bottom: 12px;
+}
+
+p {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 24px;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  transition: 0.2s;
+}
+
+input:focus {
+  border-color: #2E7D32;
+  box-shadow: 0 0 5px rgba(46, 125, 50, 0.3);
+}
+
+button {
+  background: #2E7D32;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  width: 100%;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+button:hover {
+  background: #256428;
+}
+
+.footer {
+  font-size: 13px;
+  margin-top: 20px;
+  color: #777;
+}
