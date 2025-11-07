@@ -1,3 +1,4 @@
+# --- Imports ---
 import cv2
 import time
 import firebase_admin
@@ -7,8 +8,38 @@ from flask import Flask, Response
 from flask_cors import CORS
 import threading
 import numpy as np
+import os # <-- NEW: To check if files exist
+import gdown # <-- NEW: To download from Google Drive
 
-# --- 1. SETUP ---
+# --- 1. FILE DOWNLOADER ---
+# --- PASTE YOUR GOOGLE DRIVE FILE IDs HERE ---
+FILE_IDS = {
+    "best.pt": "1qMt6JwWXJv5yzbOQb5oH1LwXtnP2vMvv",
+    "test_video.mp4": "1DX2pjg2dJXeUSKcgfekhDcwVBpyKPCXn"
+}
+# ---
+
+def download_files_if_missing():
+    """Checks if model/video exist, if not, downloads from Google Drive."""
+    for filename, file_id in FILE_IDS.items():
+        if not os.path.exists(filename):
+            print(f"'{filename}' not found. Downloading from Google Drive...")
+            try:
+                url = f'https://drive.google.com/uc?id={file_id}'
+                gdown.download(url, filename, quiet=False)
+                print(f"'{filename}' downloaded successfully.")
+            except Exception as e:
+                print(f"!!! ERROR: Failed to download {filename} from Google Drive.")
+                print(f"Make sure File ID '{file_id}' is correct and 'Anyone with the link' is enabled.")
+                print(f"Error details: {e}")
+                # If we can't get the files, we must exit
+                exit()
+        else:
+            print(f"'{filename}' already exists. Skipping download.")
+
+# --- 2. SETUP ---
+download_files_if_missing() # <-- RUN THE DOWNLOADER FIRST
+
 print("Initializing Firebase...")
 cred = credentials.Certificate("serviceAccount.json")
 try:
@@ -16,26 +47,18 @@ try:
 except ValueError:
     pass 
 db = firestore.client()
-
-# --- CHANGE 1: LOAD YOUR CUSTOM MODEL ---
-model = YOLO("best.pt") 
+model = YOLO("best.pt") # Now this will find the downloaded file
 print("Firebase and CUSTOM model (best.pt) loaded.")
-# ---
 
-# --- 2. CAMERA CONFIGURATION ---
+# --- 3. CAMERA CONFIGURATION ---
 CAMERA_SOURCES = {
-    "cam_01": 0,                # <-- USES YOUR LAPTOP WEBCAM
-    "cam_02": "test_video.mp4"  # <-- USES THE TEST VIDEO
+    "cam_01": 0,                
+    "cam_02": "test_video.mp4" # This will find the downloaded file
 }
-
-# --- 3. NEW PRIORITY CONFIG ---
-# --- CHANGE 2: UPDATE THIS LIST ---
-# Add the *exact* class names from your custom model that you want to alert on.
-# (I'm guessing based on our chat)
 PRIORITY_ANIMALS = ["elephant", "tiger", "leopard", "boar", "bear"] 
-# ---
 
-# (Fetching configs from Firestore... code is unchanged)
+# (The rest of your script is exactly the same...)
+# (Fetching configs from Firestore...)
 CAMERA_ZONES = {}
 CAMERA_LOCATIONS = {}
 try:
@@ -73,7 +96,7 @@ def process_camera_feed(cam_id, source):
         return
 
     last_ai_run_time = 0
-    ai_run_interval = 1 # Run AI only once per second (lag fix)
+    ai_run_interval = 1 
     cached_annotated_frame = None
 
     while True:
@@ -92,7 +115,6 @@ def process_camera_feed(cam_id, source):
                 
                 results = model(small_frame, verbose=False)
                 
-                # --- MANUAL DRAWING LOGIC ---
                 annotated_frame = small_frame.copy() 
                 priority_detections_found = []
 
@@ -101,11 +123,9 @@ def process_camera_feed(cam_id, source):
                     species = model.names[cls].lower()
                     conf = float(box.conf[0])
                     
-                    # --- Check if it's a priority animal ---
                     if conf > 0.7 and species in PRIORITY_ANIMALS:
                         priority_detections_found.append((species, conf))
                         
-                        # Manually draw the box
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         label = f"{species} {conf:.2f}"
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
@@ -114,7 +134,6 @@ def process_camera_feed(cam_id, source):
                 cached_annotated_frame = annotated_frame 
                 display_frame = annotated_frame 
 
-                # (Alerting logic)
                 if priority_detections_found and (current_time - last_alert_times[cam_id]) > 10:
                     species, conf = priority_detections_found[0]
                     

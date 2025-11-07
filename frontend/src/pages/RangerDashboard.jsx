@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { collection, onSnapshot, query, orderBy, getDocs } from "firebase/firestore";
 import { db } from "../firebase";
-import AnalyticsSidebar from "./AnalyticsSidebar"; // We'll keep the map/analytics
+import AnalyticsSidebar from "./AnalyticsSidebar";
 
 export default function RangerDashboard() {
   const [detections, setDetections] = useState([]);
   const [cameras, setCameras] = useState([]);
-  const [priorityCam, setPriorityCam] = useState(null); // This will hold the full camera object
+  const [activeCam, setActiveCam] = useState(null); // Renamed from priorityCam
   const [loading, setLoading] = useState(true);
+  const [autoMode, setAutoMode] = useState(true); // <-- NEW: State for auto-priority
 
   // 1. Fetch the list of all cameras from Firestore ONCE
   useEffect(() => {
@@ -22,8 +23,7 @@ export default function RangerDashboard() {
         
         if (cameraList.length > 0) {
           setCameras(cameraList);
-          // Set the first camera as the default priority
-          setPriorityCam(cameraList[0]);
+          setActiveCam(cameraList[0]); // Set default camera
         }
       } catch (error) {
         console.error("Error fetching cameras: ", error);
@@ -31,11 +31,10 @@ export default function RangerDashboard() {
       setLoading(false);
     };
     fetchCameras();
-  }, []); // Empty array means this runs only once on mount
+  }, []);
 
   // 2. Listen for new detections in real-time
   useEffect(() => {
-    // Only start listening for detections after we have the camera list
     if (cameras.length === 0) return;
 
     const q = query(collection(db, "detections"), orderBy("timestamp", "desc"));
@@ -43,27 +42,47 @@ export default function RangerDashboard() {
       const newDetections = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setDetections(newDetections);
 
-      // --- PRIORITY LOGIC ---
+      // --- UPDATED AUTO-PRIORITY LOGIC ---
       if (newDetections.length > 0) {
         const latestDetection = newDetections[0];
         const latestCam = cameras.find(c => c.id === latestDetection.camera_id);
         
-        // Auto-switch to the camera with the latest alert
-        if (latestCam && latestCam.id !== priorityCam?.id) {
-          console.log(`New detection on ${latestCam.name}, switching priority.`);
-          setPriorityCam(latestCam);
+        // Only auto-switch if we are in 'autoMode'
+        if (autoMode && latestCam && latestCam.id !== activeCam?.id) {
+          console.log(`Auto-switching to ${latestCam.name} due to new detection.`);
+          setActiveCam(latestCam);
         }
+        // If autoMode is false, we do nothing, preserving the user's manual choice.
       }
     });
     return unsub; 
-  }, [cameras, priorityCam]); // Re-check if cameras or priorityCam changes
+  }, [cameras, activeCam, autoMode]); // Add autoMode to the dependency array
 
   if (loading) {
     return <div className="container" style={{maxWidth: "700px"}}><h2>Loading Cameras...</h2></div>;
   }
+  
+  // --- NEW: Handler for manual camera click ---
+  const handleManualSwitch = (cam) => {
+    setAutoMode(false); // Turn OFF auto-priority
+    setActiveCam(cam); // Manually set the active camera
+  };
 
-  // Filter out the priority cam to show in the grid
-  const gridCams = cameras.filter(cam => cam.id !== priorityCam?.id);
+  // --- NEW: Handler for "Return to Auto" button ---
+  const handleReturnToAuto = () => {
+    setAutoMode(true);
+    // Instantly switch to the latest detection feed
+    if (detections.length > 0) {
+      const latestDetection = detections[0];
+      const latestCam = cameras.find(c => c.id === latestDetection.camera_id);
+      if (latestCam) {
+        setActiveCam(latestCam);
+      }
+    }
+  };
+
+  // Filter out the active cam to show in the grid
+  const gridCams = cameras.filter(cam => cam.id !== activeCam?.id);
 
   return (
     <div className="container" style={{ maxWidth: "1600px", padding: "20px" }}>
@@ -74,15 +93,14 @@ export default function RangerDashboard() {
         {/* --- LEFT COLUMN (Feed & Detections) --- */}
         <div style={{ flex: 3 }}>
           
-          {/* Priority Feed (The ONLY video feed on the page) */}
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             <h3 style={{ padding: "15px", background: "#333", color: "white" }}>
-              Priority Feed: {priorityCam?.name || 'No Camera Selected'} (Zone {priorityCam?.zone})
+              Live Feed: {activeCam?.name || 'No Camera Selected'} (Zone {activeCam?.zone})
             </h3>
-            {priorityCam ? (
+            {activeCam ? (
               <img 
-                src={priorityCam.stream_url} 
-                alt={`Live Feed from ${priorityCam.name}`}
+                src={activeCam.stream_url} 
+                alt={`Live Feed from ${activeCam.name}`}
                 style={{ width: "100%", height: "auto", display: "block", background: "#111" }} 
               />
             ) : (
@@ -92,13 +110,13 @@ export default function RangerDashboard() {
             )}
           </div>
           
-          {/* Detections Log */}
           <div style={{ marginTop: "20px" }}>
             <h2>Recent Detections</h2>
+            {/* ... (rest of your detection log code is fine) ... */}
             <div style={{ maxHeight: "400px", overflowY: "auto", border: "1px solid #eee", borderRadius: "8px" }}>
               {detections.length === 0 && <p style={{padding: "10px"}}>No detections yet.</p>}
-              {detections.map((alert) => (
-                <div key={alert.id} className="card" style={{ background: alert.id === detections[0]?.id ? "#fffbe6" : "#fff", border: alert.id === detections[0]?.id ? "1px solid #FBC02D" : "1px solid #eee" }}>
+              {detections.map((alert, index) => (
+                <div key={alert.id} className="card" style={{ background: index === 0 ? "#fffbe6" : "#fff", border: index === 0 ? "1px solid #FBC02D" : "1px solid #eee" }}>
                   <b>{alert.species}</b> detected on <b>{cameras.find(c => c.id === alert.camera_id)?.name || alert.camera_id}</b>
                   <br />
                   Confidence: {alert.confidence?.toFixed(2)} | Zone: {alert.zone}
@@ -111,21 +129,31 @@ export default function RangerDashboard() {
           </div>
         </div>
         
-        {/* --- RIGHT COLUMN (Map & Analytics) --- */}
+        {/* --- RIGHT COLUMN (Map, Analytics, & Camera "Links") --- */}
         <div style={{ flex: 1 }}>
           <AnalyticsSidebar detections={detections} />
           
           {/* Camera Switcher Grid */}
-          <h2 style={{marginTop: '20px'}}>All Cameras</h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px' }}>
+            <h2>All Cameras</h2>
+            {/* --- NEW: "Return to Auto" button --- */}
+            {!autoMode && (
+              <button 
+                onClick={handleReturnToAuto} 
+                style={{height: '30px', padding: '0 10px', background: '#f0ad4e', border: 'none', color: 'white', borderRadius: '5px', cursor: 'pointer', fontWeight: '600'}}
+              >
+                Auto-Priority
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: '10px' }}>
             {gridCams.map(cam => (
               <div 
                 key={cam.id} 
                 className="card" 
-                onClick={() => setPriorityCam(cam)} // Clicking this changes the main feed
+                onClick={() => handleManualSwitch(cam)} // <-- Use new handler
                 style={{ cursor: "pointer", padding: "10px", transition: "all 0.2s ease" }}
-                onMouseOver={(e) => e.currentTarget.style.borderColor = '#2E7D32'}
-                onMouseOut={(e) => e.currentTarget.style.borderColor = '#eee'}
               >
                 <h4 style={{ color: "#2E7D32" }}>{cam.name}</h4>
                 <p style={{ fontSize: "0.9em", color: "#666" }}>Zone: {cam.zone}</p>
