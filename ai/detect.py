@@ -3,14 +3,11 @@ import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 from ultralytics import YOLO
-from flask import Flask, Response
-from flask_cors import CORS
-import threading
-import numpy as np
-import os
 import gdown
+import os
+from collections import Counter # <-- Import is included
 
-# --- 1. FILE DOWNLOADER (for best.pt and test_video.mp4) ---
+# --- 1. FILE DOWNLOADER ---
 FILE_IDS = {
     "best.pt": "1qMt6JwWXJv5yzbOQb5oH1LwXtnP2vMvv",
     "test_video.mp4": "1DX2pjg2dJXeUSKcgfekhDcwVBpyKPCXn"
@@ -18,7 +15,7 @@ FILE_IDS = {
 def download_files_if_missing():
     for filename, file_id in FILE_IDS.items():
         if not os.path.exists(filename):
-            print(f"'{filename}' not found. Downloading from Google Drive...")
+            print(f"'{filename}' not found. Downloading...")
             try:
                 url = f'https://drive.google.com/uc?id={file_id}'
                 gdown.download(url, filename, quiet=False)
@@ -31,7 +28,6 @@ def download_files_if_missing():
 
 # --- 2. SETUP ---
 download_files_if_missing()
-
 print("Initializing Firebase...")
 cred = credentials.Certificate("serviceAccount.json")
 try:
@@ -40,182 +36,167 @@ except ValueError:
     pass 
 db = firestore.client()
 
-# --- NEW: LOAD BOTH MODELS ---
-print("Loading CUSTOM model (best.pt)...")
-model_custom = YOLO("best.pt")
-print("Loading DEFAULT model (yolov8s.pt)...")
-model_default = YOLO("yolov8s.pt") # This will auto-download if you don't have it
+print("Loading CUSTOM model (best.pt) for animals...")
+model_custom = YOLO("best.pt") 
+print("Loading DEFAULT model (yolov8s.pt) for humans...")
+model_default = YOLO("yolov8s.pt") 
 print("All models loaded.")
 
-# --- 3. CAMERA CONFIGURATION ---
-CAMERA_SOURCES = {
-    "cam_01": 0,                # Your Webcam
-    "cam_02": "test_video.mp4"  # Your Test Video
-}
+# --- 3. CONFIGURATION ---
+CAMERA_ID = "cam_02"
+CAMERA_SOURCE = "test_video.mp4"
+PRIORITY_ANIMALS = ["elephant", "tiger", "leopard", "boar", "bear"]
+HUMAN_CLASS = "person" 
 
-# Your custom model's animals
-PRIORITY_ANIMALS = ["elephant", "tiger", "leopard", "boar", "bear"] 
-# The default model's classes to show (but not alert on)
-DEFAULT_CLASSES = ["person", "dog", "cat", "bird"]
-
-# (Fetching configs from Firestore...)
-CAMERA_ZONES = {}
-CAMERA_LOCATIONS = {}
+CAMERA_ZONE = "A"
+CAMERA_LOCATION = {"lat": 11.0168, "lon": 76.9558}
 try:
-    print("Fetching camera configurations from Firestore...")
-    cam_ref = db.collection("cameras").stream()
-    for cam in cam_ref:
-        cam_id = cam.id
-        cam_data = cam.to_dict()
-        if cam_id in CAMERA_SOURCES:
-            CAMERA_ZONES[cam_id] = cam_data.get("zone", "unknown")
-            CAMERA_LOCATIONS[cam_id] = cam_data.get("location", None)
-            print(f"- Found config for {cam_id}: Zone {CAMERA_ZONES[cam_id]}")
+    print(f"Fetching camera config for {CAMERA_ID} from Firestore...")
+    cam_doc = db.collection("cameras").document(CAMERA_ID).get()
+    if cam_doc.exists:
+        cam_data = cam_doc.to_dict()
+        CAMERA_ZONE = cam_data.get("zone", "unknown")
+        CAMERA_LOCATION = cam_data.get("location", None)
+        print(f"- Found config for {CAMERA_ID}: Zone {CAMERA_ZONE}")
 except Exception as e:
-    print(f"!!! Error fetching camera configs: {e}. Using defaults.")
+    print(f"!!! Error fetching config: {e}. Using defaults.")
 
-# --- 4. GLOBAL VARIABLES ---
-latest_frames = {cam_id: None for cam_id in CAMERA_SOURCES}
-last_alert_times = {cam_id: 0 for cam_id in CAMERA_SOURCES}
-lock = threading.Lock()
-
-def create_placeholder_frame(text):
-    img = np.zeros((480, 640, 3), dtype=np.uint8); img[:] = (30, 30, 30)
-    cv2.putText(img, text, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    (flag, encodedImage) = cv2.imencode(".jpg", img)
-    return encodedImage.tobytes()
-
-placeholder_frame = create_placeholder_frame("Connecting...")
-
-# --- 5. AI PROCESSING THREAD (MODIFIED) ---
-def process_camera_feed(cam_id, source, model_to_use, priority_list, send_alerts=False):
-    global latest_frames, last_alert_times
-    cap = cv2.VideoCapture(source)
+# --- 4. MAIN PROCESSING LOOP ---
+def run_detection():
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
     if not cap.isOpened():
-        print(f"!!! CRITICAL ERROR: Could not open camera source for {cam_id}: {source}")
+        print(f"!!! CRITICAL ERROR: Could not open video file: {CAMERA_SOURCE}")
         return
 
+    # --- SPEED FIX: Get the video's native FPS ---
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0: fps = 30 # Default if FPS is not available
+    wait_ms = int(1000 / fps) # Calculate how long to wait between frames in milliseconds
+    print(f"Video FPS set to: {fps} (Waiting {wait_ms}ms between frames)")
+    # --- END SPEED FIX ---
+
+    detection_counts = Counter()
+    current_most_frequent = None
+    last_alert_time = 0
     last_ai_run_time = 0
-    ai_run_interval = 1 # Throttled, lag-fix
-    cached_annotated_frame = None
+    ai_run_interval = 1 # Run AI only once per second (lag fix)
+    
+    # --- This variable will hold the annotated frame to show ---
+    # We create it here so it's not reset every loop
+    display_frame = None 
+
+    print(f"Starting detection on {CAMERA_ID} (test_video.mp4)...")
+    print("Press 'q' in the video window to quit.")
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            if cam_id == "cam_02": cap.set(cv2.CAP_PROP_POS_FRAMES, 0); continue
-            else: cap = cv2.VideoCapture(source); time.sleep(2); continue
+            print(f"[{CAMERA_ID}] Video finished. Looping...")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            detection_counts.clear()
+            current_most_frequent = None
+            continue
         
         try:
             small_frame = cv2.resize(frame, (640, 480))
             current_time = time.time()
-            display_frame = small_frame 
+            
+            # Start with the clean frame
+            annotated_frame = small_frame.copy() 
 
             if (current_time - last_ai_run_time) > ai_run_interval:
                 last_ai_run_time = current_time 
                 
-                # Use the specific model passed to this thread
-                results = model_to_use(small_frame, verbose=False)
+                results_animals = model_custom(small_frame, verbose=False)
+                results_humans = model_default(small_frame, verbose=False)
                 
-                annotated_frame = small_frame.copy() 
-                detections_found = []
+                animals_in_frame = []
+                humans_in_frame = []
+                is_human_present = False
 
-                for box in results[0].boxes:
+                for box in results_animals[0].boxes:
                     cls = int(box.cls[0])
-                    species = model_to_use.names[cls].lower()
+                    species = model_custom.names[cls].lower()
                     conf = float(box.conf[0])
                     
-                    # --- NEW LOGIC ---
-                    # Only draw a box if the species is in this thread's priority list
-                    if conf > 0.7 and species in priority_list:
-                        detections_found.append((species, conf))
-                        
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        label = f"{species} {conf:.2f}"
-                        # Draw the box (green for no alert, red for alert)
-                        color = (0, 0, 255) if send_alerts else (0, 255, 0)
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    if conf > 0.7 and species in PRIORITY_ANIMALS:
+                        animals_in_frame.append({"species": species, "conf": conf, "box": box.xyxy[0]})
+                        detection_counts[species] += 1
                 
-                cached_annotated_frame = annotated_frame 
+                for box in results_humans[0].boxes:
+                    cls = int(box.cls[0])
+                    species = model_default.names[cls].lower()
+                    conf = float(box.conf[0])
+                    
+                    if conf > 0.5 and species == HUMAN_CLASS: 
+                        is_human_present = True
+                        humans_in_frame.append({"species": species, "conf": conf, "box": box.xyxy[0]})
+
+                if detection_counts:
+                    current_most_frequent = detection_counts.most_common(1)[0][0]
+                
+                for animal in animals_in_frame:
+                    if animal["species"] == current_most_frequent:
+                        x1, y1, x2, y2 = map(int, animal["box"])
+                        label = f"{animal['species']} {animal['conf']:.2f}"
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2) 
+                        cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                
+                for human in humans_in_frame:
+                    x1, y1, x2, y2 = map(int, human["box"])
+                    label = f"{human['species']} {human['conf']:.2f}"
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2) 
+                    cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                
+                # --- Store the newly annotated frame ---
                 display_frame = annotated_frame 
 
-                # --- NEW: Only send alert if send_alerts=True ---
-                if send_alerts and detections_found and (current_time - last_alert_times[cam_id]) > 10:
-                    species, conf = detections_found[0]
-                    
-                    print(f"🚨 [{cam_id}] {species} detected! SENDING ALERT.")
+                # (Alerting Logic)
+                if current_most_frequent and (current_time - last_alert_time) > 10:
+                    first_animal = next((a for a in animals_in_frame if a["species"] == current_most_frequent), None)
+                    alert_conf = first_animal["conf"] if first_animal else 0.9
+
                     data = {
-                        "camera_id": cam_id, "species": species, "confidence": conf,
-                        "zone": CAMERA_ZONES.get(cam_id, "unknown"), "priority": "high",
+                        "camera_id": CAMERA_ID, "species": current_most_frequent, "confidence": alert_conf,
+                        "zone": CAMERA_ZONE, "priority": "high",
                         "timestamp": firestore.SERVER_TIMESTAMP,
-                        "location": CAMERA_LOCATIONS.get(cam_id)
+                        "location": CAMERA_LOCATION
                     }
+
+                    if is_human_present:
+                        print(f"🚨🚨🚨 CRITICAL: {current_most_frequent} WITH {HUMAN_CLASS} DETECTED! 🚨🚨🚨")
+                        data["alert_type"] = "HIGH_RISK_HUMAN_INTERACTION"
+                        data["priority"] = "critical"
+                    else:
+                        print(f"🚨 [{CAMERA_ID}] {current_most_frequent} detected!")
+                        data["alert_type"] = "Animal Presence"
+                    
                     try:
                         db.collection("detections").add(data)
-                        print(f"✅ [{cam_id}] Alert sent to Firestore!")
-                        last_alert_times[cam_id] = current_time
+                        print(f"✅ [{CAMERA_ID}] Alert sent to Firestore!")
+                        last_alert_time = current_time
                     except Exception as e:
-                        print(f"❌ [{cam_id}] Error sending: {e}")
+                        print(f"❌ [{CAMERA_ID}] Error sending: {e}")
             
-            elif cached_annotated_frame is not None:
-                display_frame = cached_annotated_frame
-
-            with lock:
-                (flag, encodedImage) = cv2.imencode(".jpg", display_frame)
-                if flag:
-                    latest_frames[cam_id] = encodedImage.tobytes()
+            # --- DISPLAY THE FRAME ---
+            # If we have an annotated frame, show it. Otherwise, show the plain one.
+            if display_frame is not None:
+                cv2.imshow("WildWatch AI Demo (Press 'q' to quit)", display_frame)
         
         except Exception as e:
-            print(f"Error in processing frame for {cam_id}: {e}")
+            print(f"Error in processing frame: {e}")
 
-        time.sleep(0.02) 
+        # --- SPEED FIX: Wait for the correct amount of time ---
+        # This will make the video play at its normal speed
+        if cv2.waitKey(wait_ms) & 0xFF == ord('q'):
+            break
+        # --- END SPEED FIX ---
 
-# --- 6. FLASK WEB SERVER (Unchanged) ---
-app = Flask(__name__)
-CORS(app)
+    # Clean up
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Detection stopped.")
 
-def stream_generator(cam_id):
-    while True:
-        frame_bytes = None
-        with lock:
-            if latest_frames.get(cam_id):
-                frame_bytes = latest_frames.get(cam_id)
-        if frame_bytes is None:
-            frame_bytes = placeholder_frame
-            time.sleep(0.5)
-        
-        yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
-              frame_bytes + b'\r\n')
-        
-        time.sleep(0.02)
-
-@app.route("/video_feed/<cam_id>")
-def video_feed(cam_id):
-    if cam_id not in CAMERA_SOURCES:
-        return "Camera not found", 404
-    return Response(stream_generator(cam_id),
-                    mimetype = "multipart/x-mixed-replace; boundary=frame")
-
-# --- 7. START EVERYTHING (NEW LOGIC) ---
+# --- 5. START EVERYTHING ---
 if __name__ == '__main__':
-    
-    # Start cam_01 (Webcam) with the DEFAULT model and NO ALERTS
-    thread_cam_01 = threading.Thread(
-        target=process_camera_feed, 
-        args=("cam_01", CAMERA_SOURCES["cam_01"], model_default, DEFAULT_CLASSES, False), 
-        daemon=True
-    )
-    thread_cam_01.start()
-    print(f"Starting thread for cam_01 (Webcam) using yolov8s.pt. Alerts: OFF")
-
-    # Start cam_02 (Test Video) with your CUSTOM model and ALERTS ON
-    thread_cam_02 = threading.Thread(
-        target=process_camera_feed, 
-        args=("cam_02", CAMERA_SOURCES["cam_02"], model_custom, PRIORITY_ANIMALS, True), 
-        daemon=True
-    )
-    thread_cam_02.start()
-    print(f"Starting thread for cam_02 (Test Video) using best.pt. Alerts: ON")
-
-    print("\nStarting Flask server...")
-    app.run(host='0.0.0.0', port=5001, threaded=True, debug=False)
+    run_detection()
