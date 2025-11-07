@@ -5,13 +5,15 @@ from firebase_admin import credentials, firestore
 from ultralytics import YOLO
 import gdown
 import os
-from collections import Counter # <-- Import is included
+from collections import Counter
 
+# --- 1. FILE DOWNLOADER ---
 # --- 1. FILE DOWNLOADER ---
 FILE_IDS = {
     "best.pt": "1qMt6JwWXJv5yzbOQb5oH1LwXtnP2vMvv",
     "test_video.mp4": "1DX2pjg2dJXeUSKcgfekhDcwVBpyKPCXn"
 }
+
 def download_files_if_missing():
     for filename, file_id in FILE_IDS.items():
         if not os.path.exists(filename):
@@ -48,6 +50,7 @@ CAMERA_SOURCE = "test_video.mp4"
 PRIORITY_ANIMALS = ["elephant", "tiger", "leopard", "boar", "bear"]
 HUMAN_CLASS = "person" 
 
+# (Fetch camera config from Firestore)
 CAMERA_ZONE = "A"
 CAMERA_LOCATION = {"lat": 11.0168, "lon": 76.9558}
 try:
@@ -68,22 +71,11 @@ def run_detection():
         print(f"!!! CRITICAL ERROR: Could not open video file: {CAMERA_SOURCE}")
         return
 
-    # --- SPEED FIX: Get the video's native FPS ---
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps == 0: fps = 30 # Default if FPS is not available
-    wait_ms = int(1000 / fps) # Calculate how long to wait between frames in milliseconds
-    print(f"Video FPS set to: {fps} (Waiting {wait_ms}ms between frames)")
-    # --- END SPEED FIX ---
-
     detection_counts = Counter()
     current_most_frequent = None
     last_alert_time = 0
     last_ai_run_time = 0
-    ai_run_interval = 1 # Run AI only once per second (lag fix)
-    
-    # --- This variable will hold the annotated frame to show ---
-    # We create it here so it's not reset every loop
-    display_frame = None 
+    ai_run_interval = 1 # Throttled to 1 FPS (still lag-free)
 
     print(f"Starting detection on {CAMERA_ID} (test_video.mp4)...")
     print("Press 'q' in the video window to quit.")
@@ -100,9 +92,7 @@ def run_detection():
         try:
             small_frame = cv2.resize(frame, (640, 480))
             current_time = time.time()
-            
-            # Start with the clean frame
-            annotated_frame = small_frame.copy() 
+            annotated_frame = small_frame.copy() # Start with a clean frame
 
             if (current_time - last_ai_run_time) > ai_run_interval:
                 last_ai_run_time = current_time 
@@ -114,6 +104,7 @@ def run_detection():
                 humans_in_frame = []
                 is_human_present = False
 
+                # (Loop 1: Find Animals and COUNT them)
                 for box in results_animals[0].boxes:
                     cls = int(box.cls[0])
                     species = model_custom.names[cls].lower()
@@ -123,6 +114,7 @@ def run_detection():
                         animals_in_frame.append({"species": species, "conf": conf, "box": box.xyxy[0]})
                         detection_counts[species] += 1
                 
+                # (Loop 2: Find Humans)
                 for box in results_humans[0].boxes:
                     cls = int(box.cls[0])
                     species = model_default.names[cls].lower()
@@ -132,9 +124,11 @@ def run_detection():
                         is_human_present = True
                         humans_in_frame.append({"species": species, "conf": conf, "box": box.xyxy[0]})
 
+                # (Find the "Winner")
                 if detection_counts:
                     current_most_frequent = detection_counts.most_common(1)[0][0]
                 
+                # (Loop 3: Draw Annotations on 'annotated_frame')
                 for animal in animals_in_frame:
                     if animal["species"] == current_most_frequent:
                         x1, y1, x2, y2 = map(int, animal["box"])
@@ -148,9 +142,6 @@ def run_detection():
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2) 
                     cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 
-                # --- Store the newly annotated frame ---
-                display_frame = annotated_frame 
-
                 # (Alerting Logic)
                 if current_most_frequent and (current_time - last_alert_time) > 10:
                     first_animal = next((a for a in animals_in_frame if a["species"] == current_most_frequent), None)
@@ -179,18 +170,15 @@ def run_detection():
                         print(f"❌ [{CAMERA_ID}] Error sending: {e}")
             
             # --- DISPLAY THE FRAME ---
-            # If we have an annotated frame, show it. Otherwise, show the plain one.
-            if display_frame is not None:
-                cv2.imshow("WildWatch AI Demo (Press 'q' to quit)", display_frame)
+            # Show the annotated frame in a local OpenCV window
+            cv2.imshow("WildWatch AI Demo (Press 'q' to quit)", annotated_frame)
         
         except Exception as e:
             print(f"Error in processing frame: {e}")
 
-        # --- SPEED FIX: Wait for the correct amount of time ---
-        # This will make the video play at its normal speed
-        if cv2.waitKey(wait_ms) & 0xFF == ord('q'):
+        # Check for 'q' key press to quit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-        # --- END SPEED FIX ---
 
     # Clean up
     cap.release()

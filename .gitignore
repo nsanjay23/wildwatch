@@ -71,7 +71,6 @@ node_modules/
 node_modules
 functions/node_modules
 *.env
-*.json
 serviceAccount.json
 # --- SECRETS ---
 # This is the most important part. Never push these keys.
