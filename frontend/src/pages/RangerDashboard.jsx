@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { collection, onSnapshot, query, orderBy, getDocs } from "firebase/firestore";
 import { db } from "../firebase";
-import AnalyticsSidebar from "./AnalyticsSidebar";
+import AnalyticsSidebar from "./AnalyticsSidebar"; // Make sure this is imported
 
 export default function RangerDashboard() {
   const [detections, setDetections] = useState([]);
   const [cameras, setCameras] = useState([]);
-  const [activeCam, setActiveCam] = useState(null); // Renamed from priorityCam
+  const [activeCam, setActiveCam] = useState(null); // The camera to display
   const [loading, setLoading] = useState(true);
-  const [autoMode, setAutoMode] = useState(true); // <-- NEW: State for auto-priority
+  const [autoMode, setAutoMode] = useState(true); // For auto-priority
 
   // 1. Fetch the list of all cameras from Firestore ONCE
   useEffect(() => {
@@ -42,7 +42,7 @@ export default function RangerDashboard() {
       const newDetections = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setDetections(newDetections);
 
-      // --- UPDATED AUTO-PRIORITY LOGIC ---
+      // --- AUTO-PRIORITY LOGIC ---
       if (newDetections.length > 0) {
         const latestDetection = newDetections[0];
         const latestCam = cameras.find(c => c.id === latestDetection.camera_id);
@@ -52,26 +52,24 @@ export default function RangerDashboard() {
           console.log(`Auto-switching to ${latestCam.name} due to new detection.`);
           setActiveCam(latestCam);
         }
-        // If autoMode is false, we do nothing, preserving the user's manual choice.
       }
     });
     return unsub; 
-  }, [cameras, activeCam, autoMode]); // Add autoMode to the dependency array
+  }, [cameras, activeCam, autoMode]); 
 
   if (loading) {
     return <div className="container" style={{maxWidth: "700px"}}><h2>Loading Cameras...</h2></div>;
   }
   
-  // --- NEW: Handler for manual camera click ---
+  // Handler for manual camera click
   const handleManualSwitch = (cam) => {
     setAutoMode(false); // Turn OFF auto-priority
     setActiveCam(cam); // Manually set the active camera
   };
 
-  // --- NEW: Handler for "Return to Auto" button ---
+  // Handler for "Return to Auto" button
   const handleReturnToAuto = () => {
     setAutoMode(true);
-    // Instantly switch to the latest detection feed
     if (detections.length > 0) {
       const latestDetection = detections[0];
       const latestCam = cameras.find(c => c.id === latestDetection.camera_id);
@@ -112,7 +110,6 @@ export default function RangerDashboard() {
           
           <div style={{ marginTop: "20px" }}>
             <h2>Recent Detections</h2>
-            {/* ... (rest of your detection log code is fine) ... */}
             <div style={{ maxHeight: "400px", overflowY: "auto", border: "1px solid #eee", borderRadius: "8px" }}>
               {detections.length === 0 && <p style={{padding: "10px"}}>No detections yet.</p>}
               {detections.map((alert, index) => (
@@ -133,10 +130,8 @@ export default function RangerDashboard() {
         <div style={{ flex: 1 }}>
           <AnalyticsSidebar detections={detections} />
           
-          {/* Camera Switcher Grid */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px' }}>
             <h2>All Cameras</h2>
-            {/* --- NEW: "Return to Auto" button --- */}
             {!autoMode && (
               <button 
                 onClick={handleReturnToAuto} 

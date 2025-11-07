@@ -1,0 +1,5 @@
+The most frequently detected animal was: bear (found 22 times).
+
+Full Detection Summary:
+- bear: 22
+- elephant: 1

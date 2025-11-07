@@ -1,10 +1,10 @@
-// frontend/src/pages/AnalyticsSidebar.jsx
 import React from "react";
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css'; // <-- THE MAP TILE FIX
 import L from 'leaflet'; // Import L for custom icons
 
 // --- FIX FOR BROKEN MARKER ICONS ---
+// This is another common bug. We have to manually re-import the marker icons.
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
@@ -19,24 +19,34 @@ L.Marker.prototype.options.icon = DefaultIcon;
 // --- END MARKER ICON FIX ---
 
 
+// --- This function calculates the "counts" you wanted ---
 function calculateHotspots(detections) {
   const counts = new Map();
+  // Count each species
   for (const alert of detections) {
     const species = alert.species;
     counts.set(species, (counts.get(species) || 0) + 1);
   }
+  // Convert from Map to array and sort by count
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
 }
 
 export default function AnalyticsSidebar({ detections }) {
+  // Get the hotspot counts (e.g., [["Elephant", 10], ["Tiger", 3]])
   const hotspots = calculateHotspots(detections);
+  
+  // Get the 10 most recent detections to plot on the map
   const recentMarkers = detections.slice(0, 10).filter(alert => alert.location);
-  const mapCenter = [11.0573, 77.1135]; // Default center
+
+  // Set a default center for the map (I'm using your cam_01 location)
+  // This is the Arasur/Neelambur area from your screenshot
+  const mapCenter = [11.0573, 77.1135]; 
 
   return (
     <div style={{ flex: 1 }}>
       {/* --- 1. The Hotspot Map --- */}
       <h2>Hotspot Map</h2>
+      {/* Ensure the map container has a defined height */}
       <div className="card" style={{ padding: 0, overflow: 'hidden', height: '400px', marginBottom: '20px' }}>
         <MapContainer 
           center={mapCenter} 
@@ -49,6 +59,7 @@ export default function AnalyticsSidebar({ detections }) {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           
+          {/* --- Plot the "pointers" for recent animals --- */}
           {recentMarkers.map(alert => (
             <Marker 
               key={alert.id} 
