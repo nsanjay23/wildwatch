@@ -16,8 +16,11 @@ try:
 except ValueError:
     pass 
 db = firestore.client()
-model = YOLO("best.pt")
-print("Firebase and YOLO model loaded.")
+
+# --- CHANGE 1: LOAD YOUR CUSTOM MODEL ---
+model = YOLO("best.pt") 
+print("Firebase and CUSTOM model (best.pt) loaded.")
+# ---
 
 # --- 2. CAMERA CONFIGURATION ---
 CAMERA_SOURCES = {
@@ -25,7 +28,14 @@ CAMERA_SOURCES = {
     "cam_02": "test_video.mp4"  # <-- USES THE TEST VIDEO
 }
 
-# (Fetches configs from Firestore)
+# --- 3. NEW PRIORITY CONFIG ---
+# --- CHANGE 2: UPDATE THIS LIST ---
+# Add the *exact* class names from your custom model that you want to alert on.
+# (I'm guessing based on our chat)
+PRIORITY_ANIMALS = ["elephant", "tiger", "leopard", "boar", "bear"] 
+# ---
+
+# (Fetching configs from Firestore... code is unchanged)
 CAMERA_ZONES = {}
 CAMERA_LOCATIONS = {}
 try:
@@ -41,13 +51,12 @@ try:
 except Exception as e:
     print(f"!!! Error fetching camera configs: {e}. Using defaults.")
 
-# --- 3. GLOBAL VARIABLES ---
+# --- 4. GLOBAL VARIABLES ---
 latest_frames = {cam_id: None for cam_id in CAMERA_SOURCES}
 last_alert_times = {cam_id: 0 for cam_id in CAMERA_SOURCES}
 lock = threading.Lock()
 
 def create_placeholder_frame(text):
-    """Creates a black frame with text, used if the video isn't ready."""
     img = np.zeros((480, 640, 3), dtype=np.uint8); img[:] = (30, 30, 30)
     cv2.putText(img, text, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     (flag, encodedImage) = cv2.imencode(".jpg", img)
@@ -55,7 +64,7 @@ def create_placeholder_frame(text):
 
 placeholder_frame = create_placeholder_frame("Connecting...")
 
-# --- 4. AI PROCESSING THREAD ---
+# --- 5. AI PROCESSING THREAD ---
 def process_camera_feed(cam_id, source):
     global latest_frames, last_alert_times
     cap = cv2.VideoCapture(source)
@@ -64,18 +73,14 @@ def process_camera_feed(cam_id, source):
         return
 
     last_ai_run_time = 0
-    ai_run_interval = 1 # Run AI only once per second
+    ai_run_interval = 1 # Run AI only once per second (lag fix)
     cached_annotated_frame = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            if cam_id == "cam_02": # Loop the test video
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
-            else: # Try to reconnect webcam
-                cap = cv2.VideoCapture(source); time.sleep(2)
-                continue
+            if cam_id == "cam_02": cap.set(cv2.CAP_PROP_POS_FRAMES, 0); continue
+            else: cap = cv2.VideoCapture(source); time.sleep(2); continue
         
         try:
             small_frame = cv2.resize(frame, (640, 480))
@@ -84,32 +89,48 @@ def process_camera_feed(cam_id, source):
 
             if (current_time - last_ai_run_time) > ai_run_interval:
                 last_ai_run_time = current_time 
+                
                 results = model(small_frame, verbose=False)
-                annotated_frame = results[0].plot() 
+                
+                # --- MANUAL DRAWING LOGIC ---
+                annotated_frame = small_frame.copy() 
+                priority_detections_found = []
+
+                for box in results[0].boxes:
+                    cls = int(box.cls[0])
+                    species = model.names[cls].lower()
+                    conf = float(box.conf[0])
+                    
+                    # --- Check if it's a priority animal ---
+                    if conf > 0.7 and species in PRIORITY_ANIMALS:
+                        priority_detections_found.append((species, conf))
+                        
+                        # Manually draw the box
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        label = f"{species} {conf:.2f}"
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                
                 cached_annotated_frame = annotated_frame 
                 display_frame = annotated_frame 
 
-                if (current_time - last_alert_times[cam_id]) > 10: 
-                    for r in results:
-                        for box in r.boxes:
-                            cls = int(box.cls[0])
-                            species = model.names[cls]
-                            conf = float(box.conf[0])
-                            if conf > 0.7:
-                                print(f"🚨 [{cam_id}] {species} detected!")
-                                data = {
-                                    "camera_id": cam_id, "species": species, "confidence": conf,
-                                    "zone": CAMERA_ZONES.get(cam_id, "unknown"), "priority": "high",
-                                    "timestamp": firestore.SERVER_TIMESTAMP,
-                                    "location": CAMERA_LOCATIONS.get(cam_id)
-                                }
-                                try:
-                                    db.collection("detections").add(data)
-                                    print(f"✅ [{cam_id}] Alert sent to Firestore!")
-                                    last_alert_times[cam_id] = current_time
-                                except Exception as e:
-                                    print(f"❌ [{cam_id}] Error sending: {e}")
-                                break 
+                # (Alerting logic)
+                if priority_detections_found and (current_time - last_alert_times[cam_id]) > 10:
+                    species, conf = priority_detections_found[0]
+                    
+                    print(f"🚨 [{cam_id}] {species} detected!")
+                    data = {
+                        "camera_id": cam_id, "species": species, "confidence": conf,
+                        "zone": CAMERA_ZONES.get(cam_id, "unknown"), "priority": "high",
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "location": CAMERA_LOCATIONS.get(cam_id)
+                    }
+                    try:
+                        db.collection("detections").add(data)
+                        print(f"✅ [{cam_id}] Alert sent to Firestore!")
+                        last_alert_times[cam_id] = current_time
+                    except Exception as e:
+                        print(f"❌ [{cam_id}] Error sending: {e}")
             
             elif cached_annotated_frame is not None:
                 display_frame = cached_annotated_frame
@@ -122,9 +143,9 @@ def process_camera_feed(cam_id, source):
         except Exception as e:
             print(f"Error in processing frame for {cam_id}: {e}")
 
-        time.sleep(0.02) # Keep stream smooth
+        time.sleep(0.02) 
 
-# --- 5. FLASK WEB SERVER ---
+# --- 6. FLASK WEB SERVER (Unchanged) ---
 app = Flask(__name__)
 CORS(app)
 
@@ -150,7 +171,7 @@ def video_feed(cam_id):
     return Response(stream_generator(cam_id),
                     mimetype = "multipart/x-mixed-replace; boundary=frame")
 
-# --- 6. START EVERYTHING ---
+# --- 7. START EVERYTHING (Unchanged) ---
 if __name__ == '__main__':
     thread_cam_01 = threading.Thread(target=process_camera_feed, args=("cam_01", CAMERA_SOURCES["cam_01"]), daemon=True)
     thread_cam_01.start()
